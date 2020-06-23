@@ -3,27 +3,82 @@ package bin;
 import java.awt.*;
 import javax.swing.*;
 import javax.sound.midi.*;
+import javax.swing.event.ListSelectionEvent;
+import javax.swing.event.ListSelectionListener;
 import java.io.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.FileOutputStream;
+import java.net.Socket;
 import java.util.*;
 
 
 public class BeatBox {
     JPanel mainPanel;
+    JList incomingList;
+    JTextField userMassage;
     ArrayList<JCheckBox> checkBoxList;
+    int nextNum;
+    Vector<String> listVector = new Vector<String>();
+    String username;
+    ObjectOutputStream out;
+    ObjectInputStream input;
+    HashMap<String, boolean[]> otherSeqsMap = new HashMap<String, boolean[]>();
+    JTextField userNameField;
     Sequencer sequencer;
     Sequence seq;
     Track track;
     JFrame theFrame;
+    JFrame frame;
+
+
 
     String[] instrumentName = {"Bass Drum", "Closed Hi-Hat", "Open Hi-Hat", "Acoustic Snare", "Crash Cymbal", "Hand Clap", "High Tom","High Bongo",
     "Maracas", "Whistle", "Low Conga", "Cowbell", "Vibraslap", "Low-mid Tom", "High Agogo", "Open Hi Conga"};
     int[] instrument = {35, 42, 46, 38, 49, 39, 50, 60, 70, 72, 64, 56, 58, 47, 67, 63};
 
     public static void main(String[] args) {
-        new BeatBox().buildGui();
+        new BeatBox().startUp();
+    }
+
+    public void enterNickName(){
+        frame = new JFrame("");
+        JPanel nickPanel = new JPanel();
+        JPanel buttonPanel = new JPanel();
+        JLabel text = new JLabel("Ваш никнейм?");
+        userNameField = new JTextField(10);
+
+        JButton enterNick = new JButton("Ок");
+        JButton cancer = new JButton("Отмена");
+        enterNick.addActionListener(new EnterNickNameListener());
+        cancer.addActionListener(new CancerListener());
+
+        nickPanel.add(text);
+        nickPanel.add(userNameField);
+        buttonPanel.add(enterNick);
+        buttonPanel.add(cancer);
+
+        frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+        frame.getContentPane().add(BorderLayout.CENTER, nickPanel);
+        frame.getContentPane().add(BorderLayout.SOUTH, buttonPanel);
+        frame.setSize(200,200);
+        frame.setVisible(true);
+    }
+
+    public void startUp(){
+//        username = name;
+        //Открываем соединение с сервером
+        try{
+            Socket socket = new Socket("127.0.0.1", 4242);
+            out = new ObjectOutputStream(socket.getOutputStream());
+            input = new ObjectInputStream(socket.getInputStream());
+            Thread remote = new Thread(new RemoteReader());
+            remote.start();
+        } catch (Exception ex){
+            System.out.println("Couldn't connect");
+        }
+        setUpMidi();
+        buildGui();
     }
 
     public void buildGui(){
@@ -55,6 +110,20 @@ public class BeatBox {
         JButton clearCheckBox = new JButton("Очистить");
         clearCheckBox.addActionListener(new MyClearCheckBoxListener());
         buttonBox.add(clearCheckBox);
+
+        JButton sendIt = new JButton("Отправить");
+        sendIt.addActionListener(new MySendItListener());
+        buttonBox.add(sendIt);
+
+        userMassage = new JTextField();
+        buttonBox.add(userMassage);
+
+        incomingList = new JList();
+        incomingList.addListSelectionListener(new MyListSelectionListener());
+        incomingList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        JScrollPane theList = new JScrollPane(incomingList);
+        buttonBox.add(theList);
+        incomingList.setListData(listVector); // Нет начальных данных
 
         JMenuBar menuBar = new JMenuBar();
         JMenu fileMenu = new JMenu("Файл");
@@ -144,6 +213,24 @@ public class BeatBox {
         } catch (Exception e) {e.printStackTrace();}
     }
 
+    public class EnterNickNameListener implements ActionListener{
+        public void actionPerformed(ActionEvent a){
+            if ((username = userNameField.getText()) == null){
+                username = "anonymous";
+            }
+            frame.setVisible(false);
+            startUp();
+        }
+    }
+
+    public class CancerListener implements ActionListener{
+        public void actionPerformed(ActionEvent a){
+            username = "anonymous";
+            frame.setVisible(false);
+            startUp();
+        }
+    }
+
     private class SaveFileListener implements ActionListener{
         public void actionPerformed(ActionEvent a){
         JFileChooser fileSave = new JFileChooser();
@@ -197,6 +284,75 @@ public class BeatBox {
                 JCheckBox check = checkBoxList.get(i);
                 check.setSelected(false);
                 checkBoxList.set(i,check);
+            }
+        }
+    }
+
+    public class MySendItListener implements ActionListener {
+        public void actionPerformed(ActionEvent a){
+            boolean[] checkboxState = new boolean[256];
+            for (int i = 0; i < 256; i++){
+                JCheckBox check = (JCheckBox) checkBoxList.get(i);
+                if (check.isSelected()){
+                    checkboxState[i] = true;
+                }
+            }
+            String massageToSend = null;
+
+            try{
+                out.writeObject(username + nextNum++ + ": " + userMassage.getText());
+                out.writeObject(checkboxState);
+            } catch (Exception ex){
+                System.out.println("Could not send it to the server");
+                ex.printStackTrace();
+            }
+
+            userMassage.setText("");
+        }
+    }
+
+    public class MyListSelectionListener implements ListSelectionListener {
+        public void valueChanged(ListSelectionEvent lse){
+            if (!lse.getValueIsAdjusting()){
+                String selected = (String) incomingList.getSelectedValue();
+                if (selected != null){
+                    // Переходим к отображению и изменению последовательности
+                    boolean[] selectedState = (boolean[]) otherSeqsMap.get(selected);
+                    changeSequence(selectedState);
+                    sequencer.stop();
+                    buildTrackAndStart();
+                }
+            }
+        }
+    }
+    public class RemoteReader implements Runnable{
+        boolean[] checkBoxState = null;
+        String nameTheShow = null;
+        Object obj = null;
+        public void run(){
+            try{
+                while((obj = input.readObject()) != null){
+                    System.out.println("Got an object from server");
+                    System.out.println(obj.getClass());
+                    nameTheShow = (String) obj;
+                    checkBoxState = (boolean[]) input.readObject();
+                    otherSeqsMap.put(nameTheShow, checkBoxState);
+                    listVector.add(nameTheShow);
+                    incomingList.setListData(listVector);
+                }
+            } catch (Exception ex){
+                ex.printStackTrace();
+            }
+        }
+    }
+
+    public void changeSequence(boolean[] checkState){
+        for (int i = 0; i < 256; i++){
+            JCheckBox check = (JCheckBox) checkBoxList.get(i);
+            if (checkState[i]){
+                check.setSelected(true);
+            } else {
+                check.setSelected(false);
             }
         }
     }
